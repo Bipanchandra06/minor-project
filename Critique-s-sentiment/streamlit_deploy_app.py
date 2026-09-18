@@ -106,7 +106,11 @@ def load_model_and_vectorizer():
     if expected is None and hasattr(model, "support_vectors_"):
         expected = model.support_vectors_.shape[1]
     vectorizer = get_vectorizer(expected)
-    actual = len(getattr(vectorizer, "vocabulary_", {}))
+    if hasattr(vectorizer, "vocabulary_"):
+        actual = len(vectorizer.vocabulary_)
+    else:
+        # HashingVectorizer has no vocabulary by design.
+        actual = getattr(vectorizer, "n_features", None)
     if expected is not None and expected != actual:
         raise RuntimeError(
             f"Model/vectorizer mismatch: model expects {expected} features, "
