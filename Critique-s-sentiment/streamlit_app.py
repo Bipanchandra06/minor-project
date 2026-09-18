@@ -1,11 +1,15 @@
 import streamlit as st
 import pickle
 import re
+import os
 from pathlib import Path
 import nltk
+from sklearn.feature_extraction.text import HashingVectorizer
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords, wordnet
+
+MAX_REVIEW_CHARS = 10000
 
 # Download NLTK resources only when missing. Newer NLTK releases split some
 # resources into language-specific packages.
@@ -36,17 +40,23 @@ def load_model_and_vectorizer():
     model_dir = Path(__file__).resolve().parent
     vectorizer_path = model_dir / 'vectorizer1.pkl'
     model_path = model_dir / 'svm.pkl'
-    if vectorizer_path.read_bytes()[:40].startswith(b'version https://git-lfs.github.com'):
-        raise RuntimeError(
-            f'{vectorizer_path.name} is a Git-LFS pointer. Download the fitted '
-            'vectorizer artifact described in README.md and place it beside '
-            'streamlit_app.py.'
-        )
-    with vectorizer_path.open('rb') as vectorizer_file:
-        vectorizer = pickle.load(vectorizer_file)
     with model_path.open('rb') as model_file:
         model = pickle.load(model_file)
     feature_count = getattr(model, 'n_features_in_', None)
+    if feature_count is None and hasattr(model, 'support_vectors_'):
+        feature_count = model.support_vectors_.shape[1]
+
+    if os.getenv('USE_FULL_VECTORIZER', '0') != '1':
+        vectorizer = HashingVectorizer(
+            n_features=feature_count or 10000,
+            ngram_range=(1, 5),
+            alternate_sign=False,
+            norm='l2',
+        )
+        return vectorizer, model
+
+    with vectorizer_path.open('rb') as vectorizer_file:
+        vectorizer = pickle.load(vectorizer_file)
     vectorizer_count = len(getattr(vectorizer, 'vocabulary_', {}))
     if feature_count is not None and vectorizer_count != feature_count:
         raise RuntimeError(
@@ -159,11 +169,19 @@ st.title("🎬 Movie Review Sentiment Analysis 🎥")
 st.subheader("Analyze your movie review's sentiment!")
 
 # User input
-review = st.text_area("Enter your Movie Review", placeholder="Type your review here...")
+review = st.text_area(
+    "Enter your Movie Review",
+    placeholder="Type your review here...",
+    max_chars=MAX_REVIEW_CHARS,
+)
 
 # Predict sentiment
 if st.button("Predict Sentiment 🚀"):
     with st.spinner('Analyzing your review...'):
+        if len(review) > MAX_REVIEW_CHARS:
+            st.error(f"Please limit your review to {MAX_REVIEW_CHARS:,} characters.")
+            st.stop()
+
         # Clean and lemmatize the input text
         cleaned_data = clean_data(review)
         lemmatized_data = lemmatize(cleaned_data)
@@ -173,7 +191,11 @@ if st.button("Predict Sentiment 🚀"):
             st.stop()
 
         # Predict sentiment
-        prediction = model.predict(vectorizer.transform([lemmatized_data]))[0]
+        try:
+            prediction = model.predict(vectorizer.transform([lemmatized_data]))[0]
+        except MemoryError:
+            st.error("This review is too large for the available deployment memory.")
+            st.stop()
 
         # Set sentiment message based on prediction
         sentiment = " The Review is POSITIVE!" if prediction == 1 else " The Review is NEGATIVE!"

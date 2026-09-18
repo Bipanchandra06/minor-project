@@ -16,12 +16,14 @@ from pathlib import Path
 import gdown
 import nltk
 import streamlit as st
+from sklearn.feature_extraction.text import HashingVectorizer
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
 
 
 DEFAULT_VECTORIZER_DRIVE_ID = "1rF1Zqorg1EbV57Zzh0oPdB8AKIX0Wb0O"
+MAX_REVIEW_CHARS = 10000
 
 
 def ensure_nltk_resource(resource, package):
@@ -47,8 +49,15 @@ wnl = WordNetLemmatizer()
 
 
 @st.cache_resource(show_spinner="Downloading the fitted text vectorizer...")
-def get_vectorizer():
+def get_vectorizer(expected_features=None):
     """Download and load the fitted vectorizer once per Streamlit instance."""
+    if os.getenv("USE_FULL_VECTORIZER", "0") != "1":
+        return HashingVectorizer(
+            n_features=expected_features or 10000,
+            ngram_range=(1, 5),
+            alternate_sign=False,
+            norm="l2",
+        )
     try:
         secret_drive_id = st.secrets.get("VECTORIZER_DRIVE_ID")
     except Exception:
@@ -93,8 +102,10 @@ def load_model_and_vectorizer():
     model_path = Path(__file__).resolve().parent / "svm.pkl"
     with model_path.open("rb") as handle:
         model = pickle.load(handle)
-    vectorizer = get_vectorizer()
     expected = getattr(model, "n_features_in_", None)
+    if expected is None and hasattr(model, "support_vectors_"):
+        expected = model.support_vectors_.shape[1]
+    vectorizer = get_vectorizer(expected)
     actual = len(getattr(vectorizer, "vocabulary_", {}))
     if expected is not None and expected != actual:
         raise RuntimeError(
@@ -145,14 +156,25 @@ except Exception as error:
     st.error(f"Unable to load the sentiment model: {error}")
     st.stop()
 
-review = st.text_area("Enter your Movie Review", placeholder="Type your review here...")
+review = st.text_area(
+    "Enter your Movie Review",
+    placeholder="Type your review here...",
+    max_chars=MAX_REVIEW_CHARS,
+)
 if st.button("Predict Sentiment 🚀"):
+    if len(review) > MAX_REVIEW_CHARS:
+        st.error(f"Please limit your review to {MAX_REVIEW_CHARS:,} characters.")
+        st.stop()
     cleaned = clean_data(review)
     lemmatized = lemmatize(cleaned)
     if not lemmatized:
         st.warning("Please enter a review before predicting its sentiment.")
         st.stop()
-    prediction = model.predict(vectorizer.transform([lemmatized]))[0]
+    try:
+        prediction = model.predict(vectorizer.transform([lemmatized]))[0]
+    except MemoryError:
+        st.error("This review is too large for the available deployment memory.")
+        st.stop()
     if prediction == 1:
         st.success("The Review is POSITIVE!")
     else:
