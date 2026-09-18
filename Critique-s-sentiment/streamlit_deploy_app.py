@@ -53,7 +53,7 @@ def get_vectorizer(expected_features=None):
     """Download and load the fitted vectorizer once per Streamlit instance."""
     if os.getenv("USE_FULL_VECTORIZER", "0") != "1":
         return HashingVectorizer(
-            n_features=expected_features or 10000,
+            n_features=expected_features or 50000,
             ngram_range=(1, 5),
             alternate_sign=False,
             norm="l2",
