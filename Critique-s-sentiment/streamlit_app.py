@@ -1,20 +1,28 @@
 import streamlit as st
 import pickle
 import re
+from pathlib import Path
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords, wordnet
 
-# Download NLTK resources only once
-try:
-    stop_words = set(stopwords.words('english'))
-except LookupError:
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    nltk.download('punkt')
-    nltk.download('averaged_perceptron_tagger')
-    stop_words = set(stopwords.words('english'))
+# Download NLTK resources only when missing. Newer NLTK releases split some
+# resources into language-specific packages.
+def ensure_nltk_resource(resource, package):
+    try:
+        nltk.data.find(resource)
+    except LookupError:
+        nltk.download(package, quiet=True)
+
+
+ensure_nltk_resource('corpora/stopwords', 'stopwords')
+ensure_nltk_resource('corpora/wordnet', 'wordnet')
+ensure_nltk_resource('tokenizers/punkt', 'punkt')
+ensure_nltk_resource('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
+ensure_nltk_resource('tokenizers/punkt_tab', 'punkt_tab')
+ensure_nltk_resource('taggers/averaged_perceptron_tagger_eng', 'averaged_perceptron_tagger_eng')
+stop_words = set(stopwords.words('english'))
 
 # Initialize lemmatizer
 wnl = WordNetLemmatizer()
@@ -25,8 +33,26 @@ st.set_page_config(page_title="Movie Review Sentiment Analysis", page_icon="🎬
 # Load vectorizer and model
 @st.cache_resource  # Cached only once for all users
 def load_model_and_vectorizer():
-    vectorizer = pickle.load(open('vectorizer1.pkl', 'rb'))
-    model = pickle.load(open('svm.pkl', 'rb'))
+    model_dir = Path(__file__).resolve().parent
+    vectorizer_path = model_dir / 'vectorizer1.pkl'
+    model_path = model_dir / 'svm.pkl'
+    if vectorizer_path.read_bytes()[:40].startswith(b'version https://git-lfs.github.com'):
+        raise RuntimeError(
+            f'{vectorizer_path.name} is a Git-LFS pointer. Download the fitted '
+            'vectorizer artifact described in README.md and place it beside '
+            'streamlit_app.py.'
+        )
+    with vectorizer_path.open('rb') as vectorizer_file:
+        vectorizer = pickle.load(vectorizer_file)
+    with model_path.open('rb') as model_file:
+        model = pickle.load(model_file)
+    feature_count = getattr(model, 'n_features_in_', None)
+    vectorizer_count = len(getattr(vectorizer, 'vocabulary_', {}))
+    if feature_count is not None and vectorizer_count != feature_count:
+        raise RuntimeError(
+            f'Model/vectorizer mismatch: model expects {feature_count} features, '
+            f'but vectorizer provides {vectorizer_count}.'
+        )
     return vectorizer, model
 
 vectorizer, model = load_model_and_vectorizer()
@@ -54,6 +80,8 @@ def clean_data(text):
 # Lemmatize text
 @st.cache_data
 def lemmatize(text):
+    if not text:
+        return ''
     tokens = [wnl.lemmatize(word, get_wordnet_pos(pos))
               for word, pos in nltk.pos_tag(word_tokenize(text))
               if word.lower() not in stop_words]
@@ -139,6 +167,10 @@ if st.button("Predict Sentiment 🚀"):
         # Clean and lemmatize the input text
         cleaned_data = clean_data(review)
         lemmatized_data = lemmatize(cleaned_data)
+
+        if not lemmatized_data:
+            st.warning("Please enter a review before predicting its sentiment.")
+            st.stop()
 
         # Predict sentiment
         prediction = model.predict(vectorizer.transform([lemmatized_data]))[0]
